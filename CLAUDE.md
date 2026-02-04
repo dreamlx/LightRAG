@@ -10,17 +10,17 @@ LightRAG is a Retrieval-Augmented Generation (RAG) framework that uses graph-bas
 
 ### Key Components
 
-- **lightrag.py**: Main orchestrator class (`LightRAG`) that coordinates document insertion, query processing, and storage management. Critical: Always call `await rag.initialize_storages()` after instantiation.
+- **lightrag/lightrag.py**: Main orchestrator class (`LightRAG`) that coordinates document insertion, query processing, and storage management. Critical: Always call `await rag.initialize_storages()` after instantiation.
 
-- **operate.py**: Core extraction and query operations including entity/relation extraction, chunking, and multi-mode retrieval logic.
+- **lightrag/operate.py**: Core extraction and query operations including entity/relation extraction, chunking, and multi-mode retrieval logic.
 
-- **base.py**: Abstract base classes for storage backends (`BaseKVStorage`, `BaseVectorStorage`, `BaseGraphStorage`, `BaseDocStatusStorage`).
+- **lightrag/base.py**: Abstract base classes for storage backends (`BaseKVStorage`, `BaseVectorStorage`, `BaseGraphStorage`, `BaseDocStatusStorage`).
 
-- **kg/**: Storage implementations (JSON, NetworkX, Neo4j, PostgreSQL, MongoDB, Redis, Milvus, Qdrant, Faiss, Memgraph). Each storage type provides different trade-offs for production vs. development use.
+- **lightrag/kg/**: Storage implementations (JSON, NetworkX, Neo4j, PostgreSQL, MongoDB, Redis, Milvus, Qdrant, Faiss, Memgraph). Each storage type provides different trade-offs for production vs. development use.
 
-- **llm/**: LLM provider bindings (OpenAI, Ollama, Azure, Gemini, Bedrock, Anthropic, etc.). All use async patterns with caching support.
+- **lightrag/llm/**: LLM provider bindings (OpenAI, Ollama, Azure, Gemini, Bedrock, Anthropic, etc.). All use async patterns with caching support.
 
-- **api/**: FastAPI server (`lightrag_server.py`) with REST endpoints and Ollama-compatible API, plus React 19 + TypeScript WebUI.
+- **lightrag/api/**: FastAPI server (`lightrag_server.py`) with REST endpoints and Ollama-compatible API, plus React 19 + TypeScript WebUI.
 
 ### Storage Layer
 
@@ -76,7 +76,7 @@ lightrag-gunicorn                                         # Multi-worker (gunico
 
 ### Testing
 ```bash
-# Run offline tests (default)
+# Run offline tests (default, ~3 seconds for 21 tests)
 python -m pytest tests
 
 # Run integration tests (requires external services)
@@ -89,13 +89,29 @@ python test_graph_storage.py
 # Keep artifacts for debugging
 python -m pytest tests --keep-artifacts
 
-# Run with custom workers
-python -m pytest tests --test-workers 4
+# Stress testing with custom workers
+python -m pytest tests --stress-test --test-workers 4
 ```
 
 ### Linting
 ```bash
 ruff check .
+ruff check . --fix   # Auto-fix issues
+ruff format .        # Format code
+```
+
+### Console Scripts (Entry Points)
+```bash
+lightrag-server              # Main API server
+lightrag-gunicorn            # Multi-worker production server
+lightrag-download-cache      # Pre-download embedding cache for offline use
+lightrag-clean-llmqc         # Clean LLM query cache
+```
+
+### Docker
+```bash
+cp env.example .env          # Configure LLM/embedding settings
+docker compose up            # Run with Docker Compose
 ```
 
 ## Key Implementation Patterns
@@ -206,19 +222,26 @@ result = await rag.aquery(
 
 ## WebUI Development
 
+**CRITICAL: Always use Bun** - Never use npm or yarn unless Bun is unavailable.
+
 ### Structure
 - `lightrag_webui/src/`: React components (TypeScript)
 - Uses Vite + Bun build system
 - Tailwind CSS for styling
 - React 19 with functional components and hooks
+- Zustand for state management
+- i18next for internationalization
+- Sigma.js for graph visualization
 
 ### Commands
 ```bash
 cd lightrag_webui
 bun install --frozen-lockfile  # Install dependencies
-bun run dev                    # Development server
+bun run dev                    # Development server (localhost:5173)
 bun run build                  # Production build
+bun run lint                   # ESLint checks
 bun test                       # Run tests
+bun run preview                # Preview production build
 ```
 
 ## Common Issues
@@ -243,6 +266,36 @@ Ollama models default to 8k context; LightRAG requires 32k+. Configure via:
 llm_model_kwargs={"options": {"num_ctx": 32768}}
 ```
 
+### 5. Embedding Format Compatibility
+Custom OpenAI-compatible endpoints may return embeddings as raw arrays instead of base64 strings. Handle both formats:
+```python
+np.array(dp.embedding, dtype=np.float32) if isinstance(dp.embedding, list)
+else np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
+```
+
+### 6. Async Generator Lock Management
+Never hold locks across async generator yields - create snapshots instead to prevent deadlocks:
+```python
+# WRONG - Deadlock prone:
+async with storage._storage_lock:
+    for key, value in storage._data.items():
+        yield batch  # Lock still held!
+
+# CORRECT - Snapshot approach:
+async with storage._storage_lock:
+    matching_items = list(storage._data.items())
+# Lock released here
+for key, value in matching_items:
+    yield batch  # No lock held
+```
+
+### 7. Lock Key Generation for Relationships
+Always sort relationship pairs for consistent lock keys to prevent deadlocks:
+```python
+sorted_key_parts = sorted([src, tgt])
+lock_key = f"{sorted_key_parts[0]}-{sorted_key_parts[1]}"
+```
+
 ## Configuration Files
 
 ### .env Configuration
@@ -265,31 +318,16 @@ Each LightRAG instance can use a `workspace` parameter for data isolation. Imple
 ## Testing Guidelines
 
 ### Test Structure
-- `tests/`: Main test suite (mirrors feature folders)
+- `tests/`: Main test suite with `conftest.py` for fixtures and custom options
 - `test_*.py` in root: Specific integration tests
-- Markers: `offline`, `integration`, `requires_db`, `requires_api`
-
-### Running Tests
-```bash
-# Default: runs only offline tests
-pytest tests
-
-# Include integration tests
-pytest tests --run-integration
-
-# Keep test artifacts for debugging
-pytest tests --keep-artifacts
-
-# Configure test workers
-pytest tests --test-workers 4
-```
+- Markers: `offline` (CI default), `integration`, `requires_db`, `requires_api`
 
 ### Environment Variables for Tests
-Set `LIGHTRAG_*` variables for integration tests:
-- `LIGHTRAG_RUN_INTEGRATION=true`
-- `LIGHTRAG_KEEP_ARTIFACTS=true`
-- `LIGHTRAG_TEST_WORKERS=4`
-- Plus storage-specific connection strings
+- `LIGHTRAG_RUN_INTEGRATION=true` - Enable integration tests
+- `LIGHTRAG_KEEP_ARTIFACTS=true` - Preserve temp files for debugging
+- `LIGHTRAG_STRESS_TEST=true` - Enable intensive workloads
+- `LIGHTRAG_TEST_WORKERS=N` - Parallel worker count
+- Storage-specific connection strings for integration tests
 
 ## Code Style
 

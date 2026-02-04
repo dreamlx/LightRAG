@@ -1124,6 +1124,8 @@ AGENTS.md is a simple, open format for guiding coding agents (https://agents.md/
 
 LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
 
+> **Code Indexing Integration**: For code indexing scenarios (e.g., integrating with code analysis tools), see [LoomGraph Integration Guide](./docs/api/LOOMGRAPH_INTEGRATION.md) for field mapping conventions and best practices.
+
 <details>
   <summary> <b> Create Entities and Relations </b></summary>
 
