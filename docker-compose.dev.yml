@@ -1,0 +1,42 @@
+# macOS development environment with CPU-based TEI (Text Embeddings Inference)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# TEI CPU image has no ARM64 build; runs via Rosetta 2 on Apple Silicon.
+# Uses bge-base-en-v1.5 (~438MB) for dev — lightweight enough for CPU/Rosetta.
+# Production uses Jina Code V2 on GPU TEI (see docker-compose.prod.yml).
+
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
+    platform: linux/amd64
+    container_name: tei
+    ports:
+      - "8090:80"
+    volumes:
+      - ./data/models:/data
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    command: >
+      --model-id BAAI/bge-base-en-v1.5
+      --port 80
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
+    restart: unless-stopped
+
+  lightrag:
+    image: lightrag:local
+    depends_on:
+      tei:
+        condition: service_healthy
+    environment:
+      - EMBEDDING_BINDING=openai
+      - EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+      - EMBEDDING_DIM=768
+      - EMBEDDING_SEND_DIM=false
+      - EMBEDDING_TOKEN_LIMIT=512
+      - EMBEDDING_BINDING_HOST=http://tei:80/v1
+      - EMBEDDING_BINDING_API_KEY=dummy
