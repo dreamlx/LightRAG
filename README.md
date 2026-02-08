@@ -114,7 +114,7 @@
 >
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 >
-> **🖥️ GPU Server Deployment**: For deploying on GPU servers (e.g., H200) with TEI embedding, see [H200 Deployment Guide](./docs/deployment/H200_DEPLOYMENT.md). For multi-project setups, see [Multi-Project Deployment Guide](./docs/deployment/MULTI_PROJECT_GUIDE.md).
+> **🖥️ GPU Server Deployment**: For deploying on GPU servers (e.g., H200) with TEI embedding, see [H200 Deployment Guide](./docs/deployment/H200_DEPLOYMENT.md). For multi-project setups, see [Multi-Project Deployment Guide](./docs/deployment/MULTI_PROJECT_GUIDE.md). For daily operations, see [Operations Manual](./docs/deployment/OPERATIONS_MANUAL.md).
 
 ### Install LightRAG Server
 
