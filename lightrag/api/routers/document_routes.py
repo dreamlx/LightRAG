@@ -9,7 +9,7 @@ import aiofiles
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Literal
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Literal
 from io import BytesIO
 from fastapi import (
     APIRouter,
@@ -17,8 +17,12 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Request,
     UploadFile,
 )
+
+if TYPE_CHECKING:
+    from lightrag.api.workspace_manager import WorkspaceManager
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
@@ -524,7 +528,7 @@ class InsertCustomKGResponse(BaseModel):
         description="Status of the insertion operation"
     )
     message: str = Field(description="Message describing the operation result")
-    details: Optional[dict[str, int]] = Field(
+    details: Optional[Dict[str, Any]] = Field(
         default=None, description="Details about inserted items"
     )
 
@@ -537,6 +541,7 @@ class InsertCustomKGResponse(BaseModel):
                     "chunks_count": 10,
                     "entities_count": 25,
                     "relationships_count": 40,
+                    "workspace": "default",
                 },
             }
         }
@@ -2154,7 +2159,10 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    api_key: Optional[str] = None,
+    workspace_manager: Optional["WorkspaceManager"] = None,
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
@@ -2189,7 +2197,10 @@ def create_document_routes(
         response_model=InsertCustomKGResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def insert_custom_kg(request: InsertCustomKGRequest):
+    async def insert_custom_kg(
+        body: InsertCustomKGRequest,
+        request: Request,
+    ):
         """
         Insert a custom knowledge graph with chunks, entities, and relationships.
 
@@ -2202,51 +2213,72 @@ def create_document_routes(
         - **entities**: Named entities with types and descriptions
         - **relationships**: Connections between entities with keywords
 
+        **Multi-project support:**
+        Use the `LIGHTRAG-WORKSPACE` header to specify which project/workspace
+        to insert data into. If not specified, uses the default workspace.
+
         Args:
-            request: InsertCustomKGRequest containing the custom_kg data
+            body: InsertCustomKGRequest containing the custom_kg data
+            request: FastAPI Request object for accessing headers
 
         Returns:
             InsertCustomKGResponse with status, message, and insertion counts
 
         Example:
-            ```json
-            {
-                "custom_kg": {
-                    "entities": [
-                        {"entity_name": "MyClass", "entity_type": "class"}
-                    ],
-                    "relationships": [
-                        {"src_id": "MyClass", "tgt_id": "BaseClass",
-                         "description": "inherits", "keywords": "inheritance"}
-                    ]
-                }
-            }
+            ```bash
+            curl -X POST /documents/insert_custom_kg \\
+              -H "LIGHTRAG-WORKSPACE: erp" \\
+              -H "Content-Type: application/json" \\
+              -d '{"custom_kg": {"entities": [...]}}'
             ```
         """
         try:
+            # Get workspace from header (for multi-project support)
+            workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+
+            # Determine which RAG instance to use
+            if workspace and workspace_manager is not None:
+                # Use workspace manager for dynamic workspace routing
+                try:
+                    target_rag = await workspace_manager.get_instance(workspace)
+                    logger.info(f"Using workspace: {workspace}")
+                except ValueError as ve:
+                    raise HTTPException(status_code=400, detail=str(ve))
+            else:
+                # Use default RAG instance (backward compatible)
+                target_rag = rag
+                if workspace:
+                    logger.warning(
+                        f"LIGHTRAG-WORKSPACE header '{workspace}' ignored: "
+                        "WorkspaceManager not configured"
+                    )
+
             # Convert Pydantic models to dict for ainsert_custom_kg
             custom_kg_dict = {
-                "chunks": [chunk.model_dump() for chunk in request.custom_kg.chunks],
+                "chunks": [chunk.model_dump() for chunk in body.custom_kg.chunks],
                 "entities": [
-                    entity.model_dump() for entity in request.custom_kg.entities
+                    entity.model_dump() for entity in body.custom_kg.entities
                 ],
                 "relationships": [
-                    rel.model_dump() for rel in request.custom_kg.relationships
+                    rel.model_dump() for rel in body.custom_kg.relationships
                 ],
             }
 
             # Call the underlying method
-            await rag.ainsert_custom_kg(custom_kg_dict)
+            await target_rag.ainsert_custom_kg(custom_kg_dict)
 
             return InsertCustomKGResponse(
                 status="success",
                 message="Custom KG inserted successfully",
                 details={
-                    "chunks_count": len(request.custom_kg.chunks),
-                    "entities_count": len(request.custom_kg.entities),
-                    "relationships_count": len(request.custom_kg.relationships),
+                    "chunks_count": len(body.custom_kg.chunks),
+                    "entities_count": len(body.custom_kg.entities),
+                    "relationships_count": len(body.custom_kg.relationships),
+                    "workspace": target_rag.workspace,
                 },
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error inserting custom KG: {e}")
             logger.error(traceback.format_exc())
