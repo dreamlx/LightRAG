@@ -428,6 +428,120 @@ class DeleteRelationRequest(BaseModel):
         return entity_name.strip()
 
 
+# =============================================================================
+# Insert Custom KG Models (for LoomGraph integration)
+# =============================================================================
+
+
+class CustomKGChunk(BaseModel):
+    """A chunk of content for custom knowledge graph insertion."""
+
+    content: str = Field(..., description="The text content of the chunk")
+    source_id: str = Field(..., description="Source identifier for linking entities")
+    file_path: str = Field(default="custom_kg", description="File path of the source")
+    chunk_order_index: int = Field(default=0, description="Order index of the chunk")
+
+
+class CustomKGEntity(BaseModel):
+    """An entity for custom knowledge graph insertion."""
+
+    entity_name: str = Field(..., description="Unique name of the entity")
+    entity_type: str = Field(default="UNKNOWN", description="Type of the entity")
+    description: str = Field(
+        default="No description provided", description="Description of the entity"
+    )
+    source_id: str = Field(default="UNKNOWN", description="Source chunk identifier")
+    file_path: str = Field(default="custom_kg", description="File path of the source")
+
+
+class CustomKGRelationship(BaseModel):
+    """A relationship for custom knowledge graph insertion."""
+
+    src_id: str = Field(..., description="Source entity name")
+    tgt_id: str = Field(..., description="Target entity name")
+    description: str = Field(..., description="Description of the relationship")
+    keywords: str = Field(..., description="Keywords describing the relationship")
+    weight: float = Field(default=1.0, description="Weight of the relationship")
+    source_id: str = Field(default="UNKNOWN", description="Source chunk identifier")
+    file_path: str = Field(default="custom_kg", description="File path of the source")
+
+
+class CustomKG(BaseModel):
+    """Custom knowledge graph data structure."""
+
+    chunks: list[CustomKGChunk] = Field(
+        default_factory=list, description="List of content chunks"
+    )
+    entities: list[CustomKGEntity] = Field(
+        default_factory=list, description="List of entities"
+    )
+    relationships: list[CustomKGRelationship] = Field(
+        default_factory=list, description="List of relationships"
+    )
+
+
+class InsertCustomKGRequest(BaseModel):
+    """Request model for inserting custom knowledge graph."""
+
+    custom_kg: CustomKG = Field(..., description="The custom knowledge graph data")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "custom_kg": {
+                    "chunks": [
+                        {
+                            "content": "def login(username, password): ...",
+                            "source_id": "auth.py:42",
+                            "file_path": "src/auth.py",
+                        }
+                    ],
+                    "entities": [
+                        {
+                            "entity_name": "AuthService.login",
+                            "entity_type": "method",
+                            "description": "User login method",
+                            "source_id": "auth.py:42",
+                        }
+                    ],
+                    "relationships": [
+                        {
+                            "src_id": "AuthService.login",
+                            "tgt_id": "verify",
+                            "description": "calls verify function",
+                            "keywords": "calls,dependency",
+                        }
+                    ],
+                }
+            }
+        }
+
+
+class InsertCustomKGResponse(BaseModel):
+    """Response model for custom knowledge graph insertion."""
+
+    status: Literal["success", "error"] = Field(
+        description="Status of the insertion operation"
+    )
+    message: str = Field(description="Message describing the operation result")
+    details: Optional[dict[str, int]] = Field(
+        default=None, description="Details about inserted items"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "success",
+                "message": "Custom KG inserted successfully",
+                "details": {
+                    "chunks_count": 10,
+                    "entities_count": 25,
+                    "relationships_count": 40,
+                },
+            }
+        }
+
+
 class DocStatusResponse(BaseModel):
     id: str = Field(description="Document identifier")
     content_summary: str = Field(description="Summary of document content")
@@ -2069,6 +2183,76 @@ def create_document_routes(
             message="Scanning process has been initiated in the background",
             track_id=track_id,
         )
+
+    @router.post(
+        "/insert_custom_kg",
+        response_model=InsertCustomKGResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def insert_custom_kg(request: InsertCustomKGRequest):
+        """
+        Insert a custom knowledge graph with chunks, entities, and relationships.
+
+        This endpoint allows batch insertion of pre-extracted knowledge graph data,
+        bypassing the LLM extraction process. Ideal for code indexing scenarios
+        where entities and relationships are already known.
+
+        The endpoint supports:
+        - **chunks**: Text content with source identifiers
+        - **entities**: Named entities with types and descriptions
+        - **relationships**: Connections between entities with keywords
+
+        Args:
+            request: InsertCustomKGRequest containing the custom_kg data
+
+        Returns:
+            InsertCustomKGResponse with status, message, and insertion counts
+
+        Example:
+            ```json
+            {
+                "custom_kg": {
+                    "entities": [
+                        {"entity_name": "MyClass", "entity_type": "class"}
+                    ],
+                    "relationships": [
+                        {"src_id": "MyClass", "tgt_id": "BaseClass",
+                         "description": "inherits", "keywords": "inheritance"}
+                    ]
+                }
+            }
+            ```
+        """
+        try:
+            # Convert Pydantic models to dict for ainsert_custom_kg
+            custom_kg_dict = {
+                "chunks": [chunk.model_dump() for chunk in request.custom_kg.chunks],
+                "entities": [
+                    entity.model_dump() for entity in request.custom_kg.entities
+                ],
+                "relationships": [
+                    rel.model_dump() for rel in request.custom_kg.relationships
+                ],
+            }
+
+            # Call the underlying method
+            await rag.ainsert_custom_kg(custom_kg_dict)
+
+            return InsertCustomKGResponse(
+                status="success",
+                message="Custom KG inserted successfully",
+                details={
+                    "chunks_count": len(request.custom_kg.chunks),
+                    "entities_count": len(request.custom_kg.entities),
+                    "relationships_count": len(request.custom_kg.relationships),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Error inserting custom KG: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error inserting custom KG: {str(e)}"
+            )
 
     @router.post(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
