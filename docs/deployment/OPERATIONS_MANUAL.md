@@ -261,6 +261,9 @@ LoomGraph 通过 HTTP REST API 与 LightRAG 交互：
 | `/insert_custom_kg` | POST | 插入代码知识图谱 (跳过 LLM) |
 | `/query` | POST | 查询知识图谱 |
 | `/documents/text` | POST | 插入文本 (完整 LLM 流程) |
+| `/documents` | DELETE | 清空全部数据 (用于重建) |
+| `/documents/delete_entity` | DELETE | 删除单个实体及其关系 |
+| `/documents/clear_cache` | DELETE | 清空 LLM 响应缓存 |
 
 ### 插入代码知识图谱
 
@@ -381,6 +384,66 @@ async def main():
     answer = await client.query("如何实现用户认证？")
     print(answer["response"])
 ```
+
+### 更新策略
+
+LoomGraph 采用 Warm/Cold 两层更新策略：
+
+```
+┌──────┬───────────────┬─────────────────────────────────┐
+│ 层级 │   触发时机    │              操作               │
+├──────┼───────────────┼─────────────────────────────────┤
+│ Warm │ git commit    │ POST /insert_custom_kg (追加)   │
+├──────┼───────────────┼─────────────────────────────────┤
+│ Cold │ 凌晨 / 手动   │ DELETE /documents + 全量重建    │
+└──────┴───────────────┴─────────────────────────────────┘
+```
+
+#### Warm Update (增量追加)
+
+每次 `git commit` 后，只处理变动文件，直接追加到知识图谱：
+
+```python
+async def warm_update(changed_files: list[str], client: LightRAGClient):
+    """git commit 后触发的增量更新."""
+    for file_path in changed_files:
+        result = parse_file(file_path)
+        await client.insert_custom_kg(result)
+```
+
+**特点**：
+- 快速（仅处理变动文件）
+- 旧版本实体仍存在（查询时通过时间戳过滤）
+- 适合日常开发
+
+#### Cold Rebuild (全量重建)
+
+定期清空并重建，清除过时数据：
+
+```bash
+# 1. 清空知识图谱
+curl -X DELETE http://117.131.45.179:3010/documents
+
+# 2. 全量重新索引
+loomgraph index --full /path/to/repo
+```
+
+```python
+async def cold_rebuild(repo_path: str, client: LightRAGClient):
+    """全量重建知识图谱."""
+    # 1. 清空全部
+    async with httpx.AsyncClient(timeout=60) as http:
+        await http.delete(f"{client.base_url}/documents")
+
+    # 2. 全量重新索引
+    custom_kg = parse_repository(repo_path)
+    await client.insert_custom_kg(custom_kg)
+```
+
+**特点**：
+- 清除所有过时/删除的实体
+- 耗时较长（需重新解析整个仓库）
+- 建议凌晨定时执行或手动触发
 
 ## 故障排查
 
@@ -507,3 +570,4 @@ done
 | 2026-02-08 | 初始部署：拼便宜、智采云链 | - |
 | 2026-02-08 | 拼便宜数据从默认实例迁移到独立目录 | - |
 | 2026-02-08 | 添加端口 3001 向后兼容 (指向拼便宜) | - |
+| 2026-02-10 | 添加 LoomGraph Warm/Cold 更新策略文档 | - |
