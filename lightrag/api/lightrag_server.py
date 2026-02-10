@@ -45,6 +45,7 @@ from lightrag.constants import (
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
 )
+from lightrag.api.workspace_manager import WorkspaceManager
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
@@ -1087,12 +1088,54 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
+    # Create WorkspaceManager for multi-project support
+    # Uses the same base config as the default RAG instance
+    workspace_manager_config = {
+        "llm_model_func": create_llm_model_func(args.llm_binding),
+        "llm_model_name": args.llm_model,
+        "llm_model_max_async": args.max_async,
+        "summary_max_tokens": args.summary_max_tokens,
+        "summary_context_size": args.summary_context_size,
+        "chunk_token_size": int(args.chunk_size),
+        "chunk_overlap_token_size": int(args.chunk_overlap_size),
+        "llm_model_kwargs": create_llm_model_kwargs(
+            args.llm_binding, args, llm_timeout
+        ),
+        "embedding_func": embedding_func,
+        "default_llm_timeout": llm_timeout,
+        "default_embedding_timeout": embedding_timeout,
+        "kv_storage": args.kv_storage,
+        "graph_storage": args.graph_storage,
+        "vector_storage": args.vector_storage,
+        "doc_status_storage": args.doc_status_storage,
+        "vector_db_storage_cls_kwargs": {
+            "cosine_better_than_threshold": args.cosine_threshold
+        },
+        "enable_llm_cache_for_entity_extract": args.enable_llm_cache_for_extract,
+        "enable_llm_cache": args.enable_llm_cache,
+        "rerank_model_func": rerank_model_func,
+        "max_parallel_insert": args.max_parallel_insert,
+        "max_graph_nodes": args.max_graph_nodes,
+        "addon_params": {
+            "language": args.summary_language,
+            "entity_types": args.entity_types,
+        },
+        "ollama_server_infos": ollama_server_infos,
+    }
+
+    workspace_manager = WorkspaceManager(
+        base_config=workspace_manager_config,
+        working_dir=args.working_dir,
+    )
+    logger.info("WorkspaceManager initialized for multi-project support")
+
     # Add routes
     app.include_router(
         create_document_routes(
             rag,
             doc_manager,
             api_key,
+            workspace_manager=workspace_manager,
         )
     )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
