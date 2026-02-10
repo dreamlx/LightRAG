@@ -129,6 +129,26 @@ tail -f ~/lightrag-projects/zhicaiyunlian_default/lightrag.log
 docker logs -f tei-jina
 ```
 
+### 代码更新部署
+
+```bash
+# 方式一: Git Pull (需要网络访问 GitHub)
+cd ~/lightrag
+git pull origin loomgraph-main
+~/lightrag-projects/stop-all.sh
+~/lightrag-projects/start-all.sh
+
+# 方式二: SCP 传输 (GitHub 不可达时)
+# 在本地执行:
+scp -P 2213 lightrag/api/routers/document_routes.py \
+  root@117.131.45.179:~/lightrag/lightrag/api/routers/
+
+# 在服务器执行:
+~/lightrag-projects/stop-all.sh && ~/lightrag-projects/start-all.sh
+```
+
+**注意**: 代码库共享，更新一份代码后重启，所有客户实例生效。
+
 ### 启动/停止服务
 
 ```bash
@@ -571,3 +591,4 @@ done
 | 2026-02-08 | 拼便宜数据从默认实例迁移到独立目录 | - |
 | 2026-02-08 | 添加端口 3001 向后兼容 (指向拼便宜) | - |
 | 2026-02-10 | 添加 LoomGraph Warm/Cold 更新策略文档 | - |
+| 2026-02-10 | 部署 POST /insert_custom_kg 批量注入端点 | - |
