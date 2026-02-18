@@ -2,10 +2,15 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
+from __future__ import annotations
+
+from typing import Optional, Dict, Any, TYPE_CHECKING
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from lightrag.api.workspace_manager import WorkspaceManager
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
@@ -86,7 +91,11 @@ class RelationCreateRequest(BaseModel):
     )
 
 
-def create_graph_routes(rag, api_key: Optional[str] = None):
+def create_graph_routes(
+    rag,
+    api_key: Optional[str] = None,
+    workspace_manager: Optional[WorkspaceManager] = None,
+):
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
@@ -683,6 +692,58 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error merging entities: {str(e)}"
+            )
+
+    @router.get("/graph/entities/all", dependencies=[Depends(combined_auth)])
+    async def get_all_entities(request: Request):
+        """
+        Get all entity nodes in the knowledge graph.
+
+        Supports workspace routing via LIGHTRAG-WORKSPACE header.
+
+        Returns:
+            List[dict]: List of all entity nodes with their properties.
+        """
+        try:
+            workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+            if workspace and workspace_manager is not None:
+                target_rag = await workspace_manager.get_instance(workspace)
+            else:
+                target_rag = rag
+            return await target_rag.get_all_graph_nodes()
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(f"Error getting all entities: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error getting all entities: {str(e)}"
+            )
+
+    @router.get("/graph/relations/all", dependencies=[Depends(combined_auth)])
+    async def get_all_relations(request: Request):
+        """
+        Get all relation edges in the knowledge graph.
+
+        Supports workspace routing via LIGHTRAG-WORKSPACE header.
+
+        Returns:
+            List[dict]: List of all relation edges with their properties.
+        """
+        try:
+            workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+            if workspace and workspace_manager is not None:
+                target_rag = await workspace_manager.get_instance(workspace)
+            else:
+                target_rag = rag
+            return await target_rag.get_all_graph_edges()
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(f"Error getting all relations: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error getting all relations: {str(e)}"
             )
 
     return router

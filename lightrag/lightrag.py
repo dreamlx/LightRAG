@@ -1060,6 +1060,22 @@ class LightRAG:
         text = await self.chunk_entity_relation_graph.get_all_labels()
         return text
 
+    async def get_all_graph_nodes(self) -> list[dict]:
+        """Get all nodes in the knowledge graph.
+
+        Returns:
+            A list of all nodes, where each node is a dictionary of its properties.
+        """
+        return await self.chunk_entity_relation_graph.get_all_nodes()
+
+    async def get_all_graph_edges(self) -> list[dict]:
+        """Get all edges in the knowledge graph.
+
+        Returns:
+            A list of all edges, where each edge is a dictionary of its properties.
+        """
+        return await self.chunk_entity_relation_graph.get_all_edges()
+
     async def get_knowledge_graph(
         self,
         node_label: str,
