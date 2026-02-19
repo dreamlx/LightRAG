@@ -156,6 +156,20 @@ class WorkspaceManager:
         """列出已加载的 workspace."""
         return list(self._instances.keys())
 
+    def discover_workspaces(self) -> list[str]:
+        """Discover all workspace directories on disk (loaded or not)."""
+        from pathlib import Path
+
+        working_path = Path(self._working_dir)
+        if not working_path.exists():
+            return []
+
+        return sorted(
+            entry.name
+            for entry in working_path.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
+
     def is_loaded(self, workspace: str) -> bool:
         """检查 workspace 是否已加载."""
         try:

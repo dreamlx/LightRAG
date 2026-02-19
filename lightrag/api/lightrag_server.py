@@ -1143,6 +1143,15 @@ def create_app(args):
         create_graph_routes(rag, api_key, workspace_manager=workspace_manager)
     )
 
+    # Workspace discovery endpoint
+    combined_auth = get_combined_auth_dependency(api_key)
+
+    @app.get("/api/workspaces", dependencies=[Depends(combined_auth)], tags=["workspace"])
+    async def list_all_workspaces():
+        """List all workspace directories (loaded and unloaded)."""
+        workspaces = workspace_manager.discover_workspaces()
+        return {"workspaces": workspaces, "count": len(workspaces)}
+
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
