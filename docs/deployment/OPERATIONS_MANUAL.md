@@ -589,16 +589,32 @@ docker compose restart pg-pinpianyi
 
 ### Docker 无法启动新容器 (cgroup timeout)
 
+**症状**: `Failed to activate service 'org.freedesktop.systemd1': timed out`
+
+**原因**: Docker 默认使用 systemd cgroup driver，通过 D-Bus 请求 systemd 创建 cgroup scope。
+当 systemd/D-Bus 通信卡住时，新容器无法启动（已运行的容器不受影响）。
+
+**临时修复**: 切换到 cgroupfs driver，绕过 systemd 直接操作 cgroup 文件系统。
+
 ```bash
-# 症状: "Failed to activate service 'org.freedesktop.systemd1': timed out"
-# 原因: systemd D-Bus 通信卡住
-# 解决: 重启 Docker daemon (已有容器有 restart policy)
+# 1. 停止当前 Docker
 kill $(cat /var/run/docker.pid)
 sleep 5
+
+# 2. 用 cgroupfs driver 重启 (临时方案，不改 daemon.json)
 nohup dockerd --exec-opt native.cgroupdriver=cgroupfs &>/tmp/dockerd.log &
 sleep 15
-docker ps  # 验证容器恢复
+
+# 3. 验证
+docker ps  # 已有容器自动恢复 (restart policy)
 ```
+
+**彻底修复**: 重启服务器。systemd 恢复后 Docker 会自动使用默认的 systemd driver。
+
+**注意**: 不要将 cgroupfs 写入 `/etc/docker/daemon.json`。cgroupfs 与 systemd 同时管理 cgroup
+可能产生冲突，仅作为 systemd 卡死时的临时绕过方案。
+
+**2026-02-20 状态**: Docker 当前以 cgroupfs 模式手动运行中，等待下次维护窗口重启服务器。
 
 ### TEI 服务异常
 
