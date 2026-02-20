@@ -26,6 +26,7 @@ Architecture details: [LoomGraph SYSTEM_DESIGN.md](https://github.com/dreamlx/Lo
 - Deployment details: `docs/deployment/OPERATIONS_MANUAL.md`
 - Migration roadmap: `docs/roadmap/EPIC-002-POSTGRESQL-MIGRATION.md`
 - LoomGraph integration API: `docs/features/LOOMGRAPH_API.md`
+- Incremental update roadmap: `docs/roadmap/EPIC-003-INCREMENTAL-UPDATE.md`
 
 ## Core Architecture
 
