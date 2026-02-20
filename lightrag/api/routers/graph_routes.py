@@ -98,8 +98,15 @@ def create_graph_routes(
 ):
     combined_auth = get_combined_auth_dependency(api_key)
 
+    async def _resolve_rag(request: Request):
+        """Resolve target RAG instance from LIGHTRAG-WORKSPACE header."""
+        workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+        if workspace and workspace_manager is not None:
+            return await workspace_manager.get_instance(workspace)
+        return rag
+
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
-    async def get_graph_labels():
+    async def get_graph_labels(request: Request):
         """
         Get all graph labels
 
@@ -107,7 +114,8 @@ def create_graph_routes(
             List[str]: List of graph labels
         """
         try:
-            return await rag.get_graph_labels()
+            target_rag = await _resolve_rag(request)
+            return await target_rag.get_graph_labels()
         except Exception as e:
             logger.error(f"Error getting graph labels: {str(e)}")
             logger.error(traceback.format_exc())
@@ -117,6 +125,7 @@ def create_graph_routes(
 
     @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
     async def get_popular_labels(
+        request: Request,
         limit: int = Query(
             300, description="Maximum number of popular labels to return", ge=1, le=1000
         ),
@@ -131,7 +140,8 @@ def create_graph_routes(
             List[str]: List of popular labels sorted by degree (highest first)
         """
         try:
-            return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
+            target_rag = await _resolve_rag(request)
+            return await target_rag.chunk_entity_relation_graph.get_popular_labels(limit)
         except Exception as e:
             logger.error(f"Error getting popular labels: {str(e)}")
             logger.error(traceback.format_exc())
@@ -141,6 +151,7 @@ def create_graph_routes(
 
     @router.get("/graph/label/search", dependencies=[Depends(combined_auth)])
     async def search_labels(
+        request: Request,
         q: str = Query(..., description="Search query string"),
         limit: int = Query(
             50, description="Maximum number of search results to return", ge=1, le=100
@@ -157,7 +168,8 @@ def create_graph_routes(
             List[str]: List of matching labels sorted by relevance
         """
         try:
-            return await rag.chunk_entity_relation_graph.search_labels(q, limit)
+            target_rag = await _resolve_rag(request)
+            return await target_rag.chunk_entity_relation_graph.search_labels(q, limit)
         except Exception as e:
             logger.error(f"Error searching labels with query '{q}': {str(e)}")
             logger.error(traceback.format_exc())
@@ -167,6 +179,7 @@ def create_graph_routes(
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
+        request: Request,
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
         max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
@@ -186,12 +199,13 @@ def create_graph_routes(
             Dict[str, List[str]]: Knowledge graph for label
         """
         try:
+            target_rag = await _resolve_rag(request)
             # Log the label parameter to check for leading spaces
             logger.debug(
                 f"get_knowledge_graph called with label: '{label}' (length: {len(label)}, repr: {repr(label)})"
             )
 
-            return await rag.get_knowledge_graph(
+            return await target_rag.get_knowledge_graph(
                 node_label=label,
                 max_depth=max_depth,
                 max_nodes=max_nodes,
@@ -205,6 +219,7 @@ def create_graph_routes(
 
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
     async def check_entity_exists(
+        request: Request,
         name: str = Query(..., description="Entity name to check"),
     ):
         """
@@ -217,7 +232,8 @@ def create_graph_routes(
             Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists
         """
         try:
-            exists = await rag.chunk_entity_relation_graph.has_node(name)
+            target_rag = await _resolve_rag(request)
+            exists = await target_rag.chunk_entity_relation_graph.has_node(name)
             return {"exists": exists}
         except Exception as e:
             logger.error(f"Error checking entity existence for '{name}': {str(e)}")
@@ -227,7 +243,7 @@ def create_graph_routes(
             )
 
     @router.post("/graph/entity/edit", dependencies=[Depends(combined_auth)])
-    async def update_entity(request: EntityUpdateRequest):
+    async def update_entity(http_request: Request, request: EntityUpdateRequest):
         """
         Update an entity's properties in the knowledge graph
 
@@ -362,7 +378,8 @@ def create_graph_routes(
             }
         """
         try:
-            result = await rag.aedit_entity(
+            target_rag = await _resolve_rag(http_request)
+            result = await target_rag.aedit_entity(
                 entity_name=request.entity_name,
                 updated_data=request.updated_data,
                 allow_rename=request.allow_rename,
@@ -417,7 +434,7 @@ def create_graph_routes(
             )
 
     @router.post("/graph/relation/edit", dependencies=[Depends(combined_auth)])
-    async def update_relation(request: RelationUpdateRequest):
+    async def update_relation(http_request: Request, request: RelationUpdateRequest):
         """Update a relation's properties in the knowledge graph
 
         Args:
@@ -427,7 +444,8 @@ def create_graph_routes(
             Dict: Updated relation information
         """
         try:
-            result = await rag.aedit_relation(
+            target_rag = await _resolve_rag(http_request)
+            result = await target_rag.aedit_relation(
                 source_entity=request.source_id,
                 target_entity=request.target_id,
                 updated_data=request.updated_data,
@@ -452,7 +470,7 @@ def create_graph_routes(
             )
 
     @router.post("/graph/entity/create", dependencies=[Depends(combined_auth)])
-    async def create_entity(request: EntityCreateRequest):
+    async def create_entity(http_request: Request, request: EntityCreateRequest):
         """
         Create a new entity in the knowledge graph
 
@@ -502,7 +520,8 @@ def create_graph_routes(
             # - Vector embedding creation in entities_vdb
             # - Metadata population and defaults
             # - Index consistency via _edit_entity_done
-            result = await rag.acreate_entity(
+            target_rag = await _resolve_rag(http_request)
+            result = await target_rag.acreate_entity(
                 entity_name=request.entity_name,
                 entity_data=request.entity_data,
             )
@@ -525,7 +544,7 @@ def create_graph_routes(
             )
 
     @router.post("/graph/relation/create", dependencies=[Depends(combined_auth)])
-    async def create_relation(request: RelationCreateRequest):
+    async def create_relation(http_request: Request, request: RelationCreateRequest):
         """
         Create a new relationship between two entities in the knowledge graph
 
@@ -588,7 +607,8 @@ def create_graph_routes(
             # - Duplicate relation checks
             # - Vector embedding creation in relationships_vdb
             # - Index consistency via _edit_relation_done
-            result = await rag.acreate_relation(
+            target_rag = await _resolve_rag(http_request)
+            result = await target_rag.acreate_relation(
                 source_entity=request.source_entity,
                 target_entity=request.target_entity,
                 relation_data=request.relation_data,
@@ -614,7 +634,7 @@ def create_graph_routes(
             )
 
     @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
-    async def merge_entities(request: EntityMergeRequest):
+    async def merge_entities(http_request: Request, request: EntityMergeRequest):
         """
         Merge multiple entities into a single entity, preserving all relationships
 
@@ -671,7 +691,8 @@ def create_graph_routes(
             - This operation cannot be undone, so verify entity names before merging
         """
         try:
-            result = await rag.amerge_entities(
+            target_rag = await _resolve_rag(http_request)
+            result = await target_rag.amerge_entities(
                 source_entities=request.entities_to_change,
                 target_entity=request.entity_to_change_into,
             )
@@ -705,11 +726,7 @@ def create_graph_routes(
             List[dict]: List of all entity nodes with their properties.
         """
         try:
-            workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-            if workspace and workspace_manager is not None:
-                target_rag = await workspace_manager.get_instance(workspace)
-            else:
-                target_rag = rag
+            target_rag = await _resolve_rag(request)
             return await target_rag.get_all_graph_nodes()
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
@@ -731,11 +748,7 @@ def create_graph_routes(
             List[dict]: List of all relation edges with their properties.
         """
         try:
-            workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-            if workspace and workspace_manager is not None:
-                target_rag = await workspace_manager.get_instance(workspace)
-            else:
-                target_rag = rag
+            target_rag = await _resolve_rag(request)
             return await target_rag.get_all_graph_edges()
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
