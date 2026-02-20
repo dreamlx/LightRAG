@@ -2285,7 +2285,6 @@ class LightRAG:
         try:
             # Insert chunks into vector storage
             all_chunks_data: dict[str, dict[str, str]] = {}
-            chunk_to_source_map: dict[str, str] = {}
             for chunk_data in custom_kg.get("chunks", []):
                 chunk_content = sanitize_text_for_encoding(chunk_data["content"])
                 source_id = chunk_data["source_id"]
@@ -2310,7 +2309,6 @@ class LightRAG:
                     "status": DocStatus.PROCESSED,
                 }
                 all_chunks_data[chunk_id] = chunk_entry
-                chunk_to_source_map[source_id] = chunk_id
                 update_storage = True
 
             if all_chunks_data:
@@ -2325,15 +2323,8 @@ class LightRAG:
                 entity_name = entity_data["entity_name"]
                 entity_type = entity_data.get("entity_type", "UNKNOWN")
                 description = entity_data.get("description", "No description provided")
-                source_chunk_id = entity_data.get("source_id", "UNKNOWN")
-                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                source_id = entity_data.get("source_id", "UNKNOWN")
                 file_path = entity_data.get("file_path", "custom_kg")
-
-                # Log if source_id is UNKNOWN
-                if source_id == "UNKNOWN":
-                    logger.warning(
-                        f"Entity '{entity_name}' has an UNKNOWN source_id. Please check the source mapping."
-                    )
 
                 # Prepare node data
                 node_data: dict[str, str] = {
@@ -2360,15 +2351,8 @@ class LightRAG:
                 description = relationship_data["description"]
                 keywords = relationship_data["keywords"]
                 weight = relationship_data.get("weight", 1.0)
-                source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
-                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                source_id = relationship_data.get("source_id", "UNKNOWN")
                 file_path = relationship_data.get("file_path", "custom_kg")
-
-                # Log if source_id is UNKNOWN
-                if source_id == "UNKNOWN":
-                    logger.warning(
-                        f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
-                    )
 
                 # Check if nodes exist in the knowledge graph
                 for need_insert_id in [src_id, tgt_id]:
@@ -2450,6 +2434,123 @@ class LightRAG:
         finally:
             if update_storage:
                 await self._insert_done()
+
+    async def adelete_by_source_ids(self, source_ids: list[str]) -> dict[str, Any]:
+        """Delete all entities, relations, and chunks associated with the given source_ids.
+
+        Designed for incremental update workflows where specific source files
+        are removed and re-injected via ainsert_custom_kg.
+
+        Args:
+            source_ids: List of source identifiers (e.g., file paths) to delete.
+
+        Returns:
+            Dictionary with deletion counts for each storage type.
+        """
+        if not source_ids:
+            return {"entities": 0, "relations": 0, "chunks": 0}
+
+        source_id_set = set(source_ids)
+
+        # 1. Find entities with matching source_id from graph storage
+        all_nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+        entity_names_to_delete = []
+        for node in all_nodes:
+            node_source = node.get("source_id", "")
+            if node_source in source_id_set:
+                entity_id = node.get("entity_id") or node.get("id")
+                if entity_id:
+                    entity_names_to_delete.append(entity_id)
+
+        # 2. Find edges with matching source_id from graph storage
+        all_edges = await self.chunk_entity_relation_graph.get_all_edges()
+        edge_pairs_to_delete = set()
+        for edge in all_edges:
+            edge_source = edge.get("source_id", "")
+            if edge_source in source_id_set:
+                src = edge.get("source")
+                tgt = edge.get("target")
+                if src and tgt:
+                    edge_pairs_to_delete.add((src, tgt))
+
+        # 3. Collect edges connected to deleted nodes (removed by DETACH DELETE)
+        #    These need VDB cleanup even if their source_id doesn't match
+        deleted_entity_set = set(entity_names_to_delete)
+        for edge in all_edges:
+            src = edge.get("source")
+            tgt = edge.get("target")
+            if src and tgt:
+                if src in deleted_entity_set or tgt in deleted_entity_set:
+                    edge_pairs_to_delete.add((src, tgt))
+
+        # 4. Delete from graph storage
+        if entity_names_to_delete:
+            await self.chunk_entity_relation_graph.remove_nodes(
+                entity_names_to_delete
+            )
+
+        # Delete edges whose source_id matches but both endpoints survive
+        remaining_edges = [
+            (s, t) for s, t in edge_pairs_to_delete
+            if s not in deleted_entity_set and t not in deleted_entity_set
+        ]
+        if remaining_edges:
+            await self.chunk_entity_relation_graph.remove_edges(remaining_edges)
+
+        # 5. Delete from entity VDB
+        if entity_names_to_delete:
+            entity_vdb_ids = [
+                compute_mdhash_id(name, prefix="ent-")
+                for name in entity_names_to_delete
+            ]
+            await self.entities_vdb.delete(entity_vdb_ids)
+
+        # 6. Delete from relationship VDB
+        if edge_pairs_to_delete:
+            rel_vdb_ids = []
+            for src, tgt in edge_pairs_to_delete:
+                rel_vdb_ids.append(compute_mdhash_id(src + tgt, prefix="rel-"))
+                rel_vdb_ids.append(compute_mdhash_id(tgt + src, prefix="rel-"))
+            await self.relationships_vdb.delete(rel_vdb_ids)
+
+        # 7. Delete chunks by source_id
+        # In ainsert_custom_kg, chunks use full_doc_id = source_id.
+        # PG backend: query chunk IDs by full_doc_id, then delete.
+        chunks_deleted = 0
+        if self.chunks_vdb and self.text_chunks:
+            chunk_ids_to_delete = []
+            if hasattr(self.chunks_vdb, "db") and hasattr(self.chunks_vdb, "table_name"):
+                query = (
+                    f"SELECT id FROM {self.chunks_vdb.table_name} "
+                    f"WHERE workspace=$1 AND full_doc_id = ANY($2)"
+                )
+                try:
+                    results = await self.chunks_vdb.db.query(
+                        query, [self.workspace, list(source_ids)]
+                    )
+                    chunk_ids_to_delete = [
+                        r["id"] for r in results
+                    ] if results else []
+                except Exception as e:
+                    logger.warning(f"Failed to query chunks by source_id: {e}")
+
+            if chunk_ids_to_delete:
+                await self.chunks_vdb.delete(chunk_ids_to_delete)
+                await self.text_chunks.delete(chunk_ids_to_delete)
+                chunks_deleted = len(chunk_ids_to_delete)
+
+        # 8. Persist all changes
+        await self._insert_done()
+
+        result = {
+            "entities": len(entity_names_to_delete),
+            "relations": len(edge_pairs_to_delete),
+            "chunks": chunks_deleted,
+        }
+        logger.info(
+            f"[{self.workspace}] Deleted by source_ids {source_ids}: {result}"
+        )
+        return result
 
     def query(
         self,

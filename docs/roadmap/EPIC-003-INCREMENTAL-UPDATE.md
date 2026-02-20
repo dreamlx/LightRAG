@@ -2,7 +2,7 @@
 
 **Epic ID**: EPIC-003
 **创建日期**: 2026-02-21
-**状态**: 📋 规划中
+**状态**: 🚧 Feature 1 完成, Feature 2/3 待开始
 **涉及仓库**: codeindex, LoomGraph, LightRAG
 
 ---
@@ -71,7 +71,7 @@ git diff HEAD~1 → affected files → delete by source_id → re-inject affecte
 ### Feature 1: DELETE /graph/by_source 端点 (LightRAG)
 
 **优先级**: P0
-**状态**: 🔲 待开始
+**状态**: ✅ 已完成
 
 按 `source_id` 批量删除实体、关系、chunks，支持 workspace 路由。
 
@@ -105,9 +105,10 @@ Body: {"source_ids": ["src/main.py", "src/utils.py"]}
 
 | Story ID | 标题 | 估点 | 状态 |
 |----------|------|------|------|
-| S1.1 | 调研 PG 各存储表的 source_id 字段覆盖情况 | 2 | 🔲 |
-| S1.2 | 实现 `delete_by_source_ids()` 在各存储后端 | 5 | 🔲 |
-| S1.3 | 添加 `DELETE /graph/by_source` API 端点 | 2 | 🔲 |
+| S1.0 | 修复 `ainsert_custom_kg` 的 source_id 映射 | 1 | ✅ |
+| S1.1 | 调研 PG 各存储表的 source_id 字段覆盖情况 | 2 | ✅ |
+| S1.2 | 实现 `adelete_by_source_ids()` 在 LightRAG 类 | 5 | ✅ |
+| S1.3 | 添加 `DELETE /graph/by_source` API 端点 | 2 | ✅ |
 | S1.4 | 编写集成测试（inject → delete → verify） | 3 | 🔲 |
 
 ---

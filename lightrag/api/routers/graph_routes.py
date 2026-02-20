@@ -825,4 +825,40 @@ def create_graph_routes(
             "errors": errors or None,
         }
 
+    @router.delete(
+        "/graph/by_source",
+        dependencies=[Depends(combined_auth)],
+        summary="Delete data by source IDs",
+        description="Delete all entities, relations, and chunks associated with the given source_ids. "
+        "Designed for incremental update workflows (EPIC-003).",
+    )
+    async def delete_by_source(request: Request):
+        target_rag = await _resolve_rag(request)
+
+        body = await request.json()
+        source_ids = body.get("source_ids", [])
+
+        if not source_ids:
+            raise HTTPException(
+                status_code=400, detail="source_ids list is required and cannot be empty"
+            )
+        if not isinstance(source_ids, list) or not all(isinstance(s, str) for s in source_ids):
+            raise HTTPException(
+                status_code=400, detail="source_ids must be a list of strings"
+            )
+
+        try:
+            deleted = await target_rag.adelete_by_source_ids(source_ids)
+            return {
+                "status": "success",
+                "workspace": target_rag.workspace,
+                "deleted": deleted,
+            }
+        except Exception as e:
+            logger.error(f"Error deleting by source_ids: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error deleting by source_ids: {str(e)}"
+            )
+
     return router
