@@ -28,14 +28,6 @@ codeindex scan → ParseResult JSON → LoomGraph embed/inject → LightRAG API 
 │   codeindex (CLI)  →  LoomGraph (CLI)  →  LightRAG (API)       │
 │      独立工具           调度编排            存储服务             │
 │                                                                 │
-│   耦合分析：                                                    │
-│   ┌────────────┬────────┬──────────────────────────────────┐   │
-│   │  集成方式  │ 耦合度 │               说明               │   │
-│   ├────────────┼────────┼──────────────────────────────────┤   │
-│   │ HTTP API   │ 松     │ 只依赖 REST 契约，可独立升级     │   │
-│   ├────────────┼────────┼──────────────────────────────────┤   │
-│   │ Python SDK │ 紧     │ 必须同环境安装，API 变化直接影响 │   │
-│   └────────────┴────────┴──────────────────────────────────┘   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -48,21 +40,23 @@ codeindex scan → ParseResult JSON → LoomGraph embed/inject → LightRAG API 
 │          ├── :3000  GLM-4.7-fp8 (New API → SGLang)             │
 │          ├── :3002  TEI Embedding (共享)                        │
 │          ├── :3010  拼便宜 LightRAG                             │
-│          └── :3020  智采云链 LightRAG                           │
+│          ├── :3020  智采云链 LightRAG                           │
+│          └── :3030  试用 LightRAG                               │
 │                     │                                           │
 │                     ▼                                           │
 │                  Nginx                                          │
 │                     │                                           │
-│          ┌─────────┴─────────┐                                 │
-│          ▼                   ▼                                  │
-│   :9610 LightRAG      :9620 LightRAG                           │
-│   (pinpianyi)         (zhicaiyunlian)                          │
-│          │                   │                                  │
-│          ▼                   ▼                                  │
-│   :5432 PostgreSQL     :5433 PostgreSQL                         │
-│   (pgvector+AGE)       (pgvector+AGE)                          │
-│          │                   │                                  │
-│          └─────────┬─────────┘                                 │
+│          ┌─────────┼─────────┐                                 │
+│          ▼         ▼         ▼                                  │
+│   :9610       :9620       :9630                                 │
+│   LightRAG    LightRAG    LightRAG                              │
+│  (pinpianyi) (zhicaiyunlian) (trial)                            │
+│          │         │         │                                  │
+│          ▼         ▼         ▼                                  │
+│   :5432 PG    :5433 PG    :5434 PG                              │
+│   (独立)      (独立)      (共享/试用)                           │
+│          │         │         │                                  │
+│          └─────────┼─────────┘                                 │
 │                    ▼                                            │
 │          :9624 TEI (GPU 4)                                      │
 │          :3000 GLM-4.7 (共享)                                   │
@@ -79,6 +73,7 @@ codeindex scan → ParseResult JSON → LoomGraph embed/inject → LightRAG API 
 | 拼便宜 | default | 3010 | `http://117.131.45.179:3010` | 代码知识图谱 |
 | 拼便宜 | default | 3001 | `http://117.131.45.179:3001` | ⚠️ 旧端口 (向后兼容) |
 | 智采云链 | default | 3020 | `http://117.131.45.179:3020` | 代码知识图谱 |
+| 试用 | trial | 3030 | `http://117.131.45.179:3030` | 试用/Demo (多 workspace 共享 PG) |
 | (共享) | TEI | 3002 | `http://117.131.45.179:3002` | Embedding 服务 |
 | (共享) | LLM | 3000 | `http://117.131.45.179:3000` | GLM-4.7-fp8 |
 
@@ -88,9 +83,11 @@ codeindex scan → ParseResult JSON → LoomGraph embed/inject → LightRAG API 
 |------|----------|------|
 | pinpianyi_default | 9610 | 拼便宜 LightRAG |
 | zhicaiyunlian_default | 9620 | 智采云链 LightRAG |
+| trial_default | 9630 | 试用 LightRAG (多 workspace 共享 PG) |
 | TEI | 9624 | Jina Code V2 Embedding |
 | pg-pinpianyi | 5432 | 拼便宜 PostgreSQL (pgvector + AGE) |
 | pg-zhicaiyunlian | 5433 | 智采云链 PostgreSQL (pgvector + AGE) |
+| pg-trial | 5434 | 试用 PostgreSQL (多 workspace 共享) |
 | postgres (new-api) | - | New API 内部数据库 (Docker 网络) |
 | Redis | 6379 | 缓存 (New API 内部) |
 
@@ -102,11 +99,13 @@ codeindex scan → ParseResult JSON → LoomGraph embed/inject → LightRAG API 
 3002       : TEI Embedding - 共享
 3010-3019  : 拼便宜 项目组
 3020-3029  : 智采云链 项目组
-3030-3039  : 预留 (新客户)
+3030       : 试用 Trial (多 workspace 共享 PG)
+3031-3039  : 预留 (新客户)
 3040-3049  : 预留
 5432       : 拼便宜 PostgreSQL
 5433       : 智采云链 PostgreSQL
-5434+      : 预留 (新客户 PostgreSQL)
+5434       : 试用 PostgreSQL (多 workspace 共享)
+5435+      : 预留 (新客户 PostgreSQL)
 ...
 ```
 
@@ -120,12 +119,13 @@ codeindex scan → ParseResult JSON → LoomGraph embed/inject → LightRAG API 
 /root/pg-data/                 # PostgreSQL 数据 & 配置
 ├── docker-compose.yml         # PG 容器编排
 ├── pinpianyi/                 # 拼便宜 PG 数据
-└── zhicaiyunlian/             # 智采云链 PG 数据
+├── zhicaiyunlian/             # 智采云链 PG 数据
+└── trial/                     # 试用 PG 数据 (多 workspace 共享)
 
 ~/lightrag-projects/           # 项目数据目录
 ├── pinpianyi_default/
 │   ├── .env                   # 项目配置
-│   ├── rag_storage/           # 图谱数据
+│   ├── rag_storage/           # LLM 缓存 (图谱数据已迁移至 PG)
 │   ├── inputs/                # 输入文件
 │   └── lightrag.log           # 日志
 ├── zhicaiyunlian_default/
@@ -243,7 +243,7 @@ HOST=0.0.0.0
 LLM_BINDING=openai
 LLM_MODEL=glm-4.7-fp8
 LLM_BINDING_HOST=http://localhost:3000/v1
-LLM_BINDING_API_KEY=sk-KnZdHZmhMIjFFUHN1ZLybTZTDB62ZQQ4AA7RuYrtBiIH7arq
+LLM_BINDING_API_KEY=sk-your-api-key-here
 OPENAI_LLM_EXTRA_BODY={"chat_template_kwargs": {"enable_thinking": false}}
 OPENAI_LLM_MAX_TOKENS=9000
 
@@ -335,7 +335,7 @@ server {
 }
 ```
 
-### 4. 启动服务
+### 5. 启动服务
 
 ```bash
 # 重载 Nginx
@@ -412,78 +412,6 @@ curl -X POST http://117.131.45.179:3020/query \
   }'
 ```
 
-### Python 客户端示例
-
-```python
-import httpx
-from typing import Optional
-
-class LightRAGClient:
-    """LightRAG HTTP API 客户端"""
-
-    def __init__(self, base_url: str, timeout: float = 300):
-        self.base_url = base_url.rstrip('/')
-        self.timeout = timeout
-
-    async def health(self) -> dict:
-        """健康检查"""
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(f"{self.base_url}/health")
-            response.raise_for_status()
-            return response.json()
-
-    async def insert_custom_kg(self, custom_kg: dict) -> dict:
-        """插入代码知识图谱"""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/insert_custom_kg",
-                json={"custom_kg": custom_kg}
-            )
-            response.raise_for_status()
-            return response.json()
-
-    async def query(
-        self,
-        query: str,
-        mode: str = "hybrid",
-        top_k: Optional[int] = None
-    ) -> dict:
-        """查询知识图谱"""
-        payload = {"query": query, "mode": mode}
-        if top_k:
-            payload["top_k"] = top_k
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{self.base_url}/query",
-                json=payload
-            )
-            response.raise_for_status()
-            return response.json()
-
-
-# 使用示例
-async def main():
-    # 智采云链客户端
-    client = LightRAGClient("http://117.131.45.179:3020")
-
-    # 健康检查
-    health = await client.health()
-    print(f"Status: {health['status']}")
-
-    # 插入代码图谱
-    kg = {
-        "chunks": [...],
-        "entities": [...],
-        "relationships": [...]
-    }
-    result = await client.insert_custom_kg(kg)
-
-    # 查询
-    answer = await client.query("如何实现用户认证？")
-    print(answer["response"])
-```
-
 ### 更新策略
 
 LoomGraph 采用 Warm/Cold 两层更新策略：
@@ -500,20 +428,8 @@ LoomGraph 采用 Warm/Cold 两层更新策略：
 
 #### Warm Update (增量追加)
 
-每次 `git commit` 后，只处理变动文件，直接追加到知识图谱：
-
-```python
-async def warm_update(changed_files: list[str], client: LightRAGClient):
-    """git commit 后触发的增量更新."""
-    for file_path in changed_files:
-        result = parse_file(file_path)
-        await client.insert_custom_kg(result)
-```
-
-**特点**：
-- 快速（仅处理变动文件）
-- 旧版本实体仍存在（查询时通过时间戳过滤）
-- 适合日常开发
+每次 `git commit` 后，LoomGraph 只处理变动文件，调用 `POST /insert_custom_kg` 追加到知识图谱。
+旧版本实体仍存在，适合日常开发。
 
 #### Cold Rebuild (全量重建)
 
@@ -527,22 +443,38 @@ curl -X DELETE http://117.131.45.179:3010/documents
 loomgraph index --full /path/to/repo
 ```
 
-```python
-async def cold_rebuild(repo_path: str, client: LightRAGClient):
-    """全量重建知识图谱."""
-    # 1. 清空全部
-    async with httpx.AsyncClient(timeout=60) as http:
-        await http.delete(f"{client.base_url}/documents")
+建议凌晨定时执行或手动触发。
 
-    # 2. 全量重新索引
-    custom_kg = parse_repository(repo_path)
-    await client.insert_custom_kg(custom_kg)
+## 试用实例
+
+### 架构
+
+试用客户共享一个 PG 实例 (`pg-trial:5434`)，通过 LightRAG workspace 隔离不同客户的数据。
+付费客户则获得独立 PG 容器 + 独立显卡绑定。
+
+```
+试用 LightRAG :9630 (Nginx :3030)
+      │
+      ├── workspace: loomgraph_demo     ← 预装 demo (LoomGraph 仓库)
+      ├── workspace: trial_customer_a   ← 试用客户 A
+      └── workspace: trial_customer_b   ← 试用客户 B
+      │
+      ▼
+  pg-trial :5434 (共享，workspace 列隔离)
 ```
 
-**特点**：
-- 清除所有过时/删除的实体
-- 耗时较长（需重新解析整个仓库）
-- 建议凌晨定时执行或手动触发
+| 维度 | 试用 | 付费 |
+|------|------|------|
+| PG | 共享 `pg-trial` | 独立容器 |
+| LightRAG | 共享实例 :9630 | 独立实例 |
+| GPU 绑定 | 共享 TEI | 独立显卡 |
+| Demo 数据 | LoomGraph 仓库 | 客户自有仓库 |
+
+### 试用 → 付费转化
+
+1. 按 [新增客户](#新增客户) 流程为付费客户创建独立实例
+2. 客户在新实例上执行 Cold Rebuild (全量重新索引)
+3. 清理试用实例中该客户的 workspace 数据
 
 ## 故障排查
 
@@ -672,6 +604,7 @@ curl http://localhost:9624/health
 |------|--------|------|------|
 | 拼便宜 | lightrag | lightrag_pinpianyi_2026 | 5432 |
 | 智采云链 | lightrag | lightrag_zcyl_2026 | 5433 |
+| 试用 | lightrag | lightrag_trial_2026 | 5434 |
 
 ### 常用操作
 
@@ -731,9 +664,7 @@ POSTGRES_ENABLE_VECTOR=true
 
 ### 新增客户 PG 容器
 
-1. 编辑 `/root/pg-data/docker-compose.yml`，添加新服务
-2. 选择下一个可用端口 (5434+)
-3. `cd /root/pg-data && docker compose up -d`
+见 [新增客户 > Step 3](#3-添加-pg-容器)。
 
 ## 备份与恢复
 
@@ -758,8 +689,11 @@ tar -czf backup_all_$(date +%Y%m%d).tar.gz \
 # 停止服务
 ~/lightrag-projects/stop-instance.sh pinpianyi_default
 
-# 恢复
+# 恢复文件数据
 tar -xzf backup_pinpianyi_20240208.tar.gz -C ~/lightrag-projects/
+
+# 恢复 PG 数据库
+docker exec -i pg-pinpianyi psql -U lightrag lightrag < backup_pg_pinpianyi_20240208.sql
 
 # 重启服务
 ~/lightrag-projects/start-instance.sh pinpianyi_default
@@ -773,15 +707,21 @@ tar -xzf backup_pinpianyi_20240208.tar.gz -C ~/lightrag-projects/
 #!/bin/bash
 # /root/scripts/check_lightrag.sh
 
-# 检查所有实例
+# 检查所有 LightRAG 实例
 for dir in ~/lightrag-projects/*/; do
     project=$(basename "$dir")
     if [ -f "$dir/.env" ]; then
         source "$dir/.env"
         if ! curl -s --max-time 5 http://localhost:$PORT/health > /dev/null; then
             echo "ALERT: $project on port $PORT is DOWN"
-            # 可以添加告警通知
         fi
+    fi
+done
+
+# 检查 PG 容器
+for pg in pg-pinpianyi pg-zhicaiyunlian pg-trial; do
+    if ! docker exec $pg pg_isready -U lightrag -q 2>/dev/null; then
+        echo "ALERT: $pg is DOWN"
     fi
 done
 ```
@@ -808,3 +748,4 @@ done
 | 2026-02-20 | PostgreSQL 迁移: 部署 pgvector+AGE 容器 (EPIC-002) | - |
 | 2026-02-20 | 存储后端切换: NetworkX → PGGraphStorage, NanoVectorDB → PGVectorStorage | - |
 | 2026-02-20 | Docker daemon 修复: systemd cgroup timeout, 临时切换到 cgroupfs driver | - |
+| 2026-02-20 | 部署试用实例: pg-trial:5434, LightRAG:9630, Nginx:3030 (多 workspace 共享 PG) | - |
