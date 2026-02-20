@@ -25,6 +25,7 @@ Architecture details: [LoomGraph SYSTEM_DESIGN.md](https://github.com/dreamlx/Lo
 - Storage backend: PostgreSQL 16 (pgvector + Apache AGE) per customer (ADR-004)
 - Deployment details: `docs/deployment/OPERATIONS_MANUAL.md`
 - Migration roadmap: `docs/roadmap/EPIC-002-POSTGRESQL-MIGRATION.md`
+- LoomGraph integration API: `docs/features/LOOMGRAPH_API.md`
 
 ## Core Architecture
 
