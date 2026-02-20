@@ -759,4 +759,70 @@ def create_graph_routes(
                 status_code=500, detail=f"Error getting all relations: {str(e)}"
             )
 
+    @router.delete(
+        "/graph/clear",
+        dependencies=[Depends(combined_auth)],
+        summary="Clear all data for a workspace",
+        description="Bulk-deletes all entities, relations, chunks, and documents for the target workspace. "
+        "Designed for Cold Rebuild workflows where the entire knowledge graph is re-injected.",
+    )
+    async def clear_workspace(request: Request):
+        import asyncio
+
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        target_rag = await _resolve_rag(request)
+
+        # Pipeline lock — prevent clearing during active indexing
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=target_rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=target_rag.workspace
+        )
+
+        async with pipeline_status_lock:
+            if pipeline_status.get("busy", False):
+                raise HTTPException(
+                    status_code=409, detail="Pipeline is busy, cannot clear data"
+                )
+
+        storages = [
+            target_rag.text_chunks,
+            target_rag.full_docs,
+            target_rag.full_entities,
+            target_rag.full_relations,
+            target_rag.entity_chunks,
+            target_rag.relation_chunks,
+            target_rag.entities_vdb,
+            target_rag.relationships_vdb,
+            target_rag.chunks_vdb,
+            target_rag.chunk_entity_relation_graph,
+            target_rag.doc_status,
+        ]
+
+        results = await asyncio.gather(
+            *[s.drop() for s in storages if s is not None],
+            return_exceptions=True,
+        )
+
+        errors = [str(r) for r in results if isinstance(r, Exception)]
+        succeeded = sum(1 for r in results if not isinstance(r, Exception))
+
+        if errors and succeeded == 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"All storage drops failed: {'; '.join(errors)}",
+            )
+
+        return {
+            "status": "success" if not errors else "partial_success",
+            "workspace": target_rag.workspace,
+            "storages_cleared": succeeded,
+            "errors": errors or None,
+        }
+
     return router
