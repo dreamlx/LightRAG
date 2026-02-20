@@ -1688,6 +1688,9 @@ async def get_entity_info(
     if include_vector_data:
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         vector_data = await entities_vdb.get_by_id(entity_id)
+        if vector_data:
+            # Remove raw embedding vector (not JSON-serializable and not useful in API responses)
+            vector_data.pop("content_vector", None)
         result["vector_data"] = vector_data
 
     return result
@@ -1728,6 +1731,9 @@ async def get_relation_info(
     if include_vector_data:
         rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
         vector_data = await relationships_vdb.get_by_id(rel_id)
+        if vector_data:
+            # Remove raw embedding vector (not JSON-serializable and not useful in API responses)
+            vector_data.pop("content_vector", None)
         result["vector_data"] = vector_data
 
     return result
