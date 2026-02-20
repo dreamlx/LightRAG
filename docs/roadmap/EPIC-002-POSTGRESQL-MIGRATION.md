@@ -3,7 +3,7 @@
 **Epic ID**: EPIC-002
 **版本**: TBD
 **创建日期**: 2026-02-19
-**状态**: 📋 规划中
+**状态**: 🚧 Phase 2+3 完成, Phase 4 待开始
 
 ---
 
@@ -83,26 +83,29 @@
 ```
 docker-compose.customer-a.yml:
   pg-a:
-    image: pgvector/pgvector:pg17
+    image: marcosbolanos/pgvector-age:latest  # PG16 + pgvector + AGE
     ports: ["5432:5432"]
-    volumes: [pg-a-data:/var/lib/postgresql/data]
+    volumes: [/root/pg-data/pinpianyi:/var/lib/postgresql/data]
 
   lightrag-a:
     environment:
-      - POSTGRES_HOST=pg-a
+      - POSTGRES_HOST=localhost
       - POSTGRES_PORT=5432
 
-docker-compose.customer-b.yml:
+# 实际部署: /root/pg-data/docker-compose.yml (所有 PG 容器统一管理)
   pg-b:
-    image: pgvector/pgvector:pg17
+    image: marcosbolanos/pgvector-age:latest
     ports: ["5433:5432"]
-    volumes: [pg-b-data:/var/lib/postgresql/data]
+    volumes: [/root/pg-data/zhicaiyunlian:/var/lib/postgresql/data]
 
   lightrag-b:
     environment:
-      - POSTGRES_HOST=pg-b
-      - POSTGRES_PORT=5432
+      - POSTGRES_HOST=localhost
+      - POSTGRES_PORT=5433
 ```
+
+**实际镜像选择**: `marcosbolanos/pgvector-age:latest` (PG16) 而非 `pgvector/pgvector:pg17`，
+因为 `PGGraphStorage` 依赖 Apache AGE 扩展进行图存储操作。
 
 ### ADR-005: Embedding 模型默认共享，架构预留切换
 
@@ -131,23 +134,35 @@ docker-compose.customer-b.yml:
 **交付物**: `GET /api/workspaces` 返回 workspace 名称列表
 **状态**: ✅ 已完成并部署
 
-### Phase 2: PG 环境搭建
+### Phase 2: PG 环境搭建 ✅
 
-在 H200 上为每个客户部署独立 PG + pgvector 容器。
-
-**交付物**:
-- 每客户独立的 docker-compose 配置
-- PG 连接测试通过
-- `.env` 模板更新
-
-### Phase 3: 存储后端切换
-
-修改客户 `.env` 指向各自的 PG，执行 Cold Rebuild。
+在 H200 上为每个客户部署独立 PG + pgvector + AGE 容器。
 
 **交付物**:
-- 客户 `.env` 配置（PG 连接参数）
-- Cold Rebuild 操作手册
-- 回滚方案（保留 NetworkX 文件，必要时切回）
+- [x] `/root/pg-data/docker-compose.yml` — 统一管理所有客户 PG 容器
+- [x] `pg-pinpianyi` (port 5432) + `pg-zhicaiyunlian` (port 5433) 运行中
+- [x] 镜像: `marcosbolanos/pgvector-age:latest` (PG16 + pgvector 0.8.0 + AGE 1.5.0)
+- [x] Python 依赖: asyncpg 0.31.0, pgvector 0.4.2 安装到 .venv
+- [x] `.env` 模板更新 (见 OPERATIONS_MANUAL.md 新增客户指南)
+
+**完成日期**: 2026-02-20
+
+### Phase 3: 存储后端切换 ✅
+
+修改客户 `.env` 指向各自的 PG，LightRAG 自动创建表结构。
+
+**交付物**:
+- [x] 客户 `.env` 配置（PG 连接参数 + 4 个 PG 存储类名）
+- [x] 11 张表自动创建 (含 HNSW 向量索引)
+- [x] `/health` 端点确认 PG 存储后端激活
+- [x] 回滚方案：注释 .env 中 PG 配置即可回退到 NetworkX
+- [ ] Cold Rebuild 待 LoomGraph 触发（inputs/ 目录为空，数据通过 API 注入）
+
+**完成日期**: 2026-02-20
+
+**注意事项**:
+- Docker daemon 遇到 systemd cgroup timeout，通过 `--exec-opt native.cgroupdriver=cgroupfs` 解决
+- 原计划用 `pgvector/pgvector:pg17` 但 PGGraphStorage 需要 AGE 扩展，改用 `pgvector-age`
 
 ### Phase 4: PG 版端点增强
 

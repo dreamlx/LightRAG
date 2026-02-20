@@ -6,6 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 LightRAG is a Retrieval-Augmented Generation (RAG) framework that uses graph-based knowledge representation for enhanced information retrieval. The system extracts entities and relationships from documents, builds a knowledge graph, and uses multi-modal retrieval (local, global, hybrid, mix, naive) for queries.
 
+This is a fork of [HKUDS/LightRAG](https://github.com/HKUDS/LightRAG) with custom extensions for the code knowledge graph ecosystem.
+
+## Ecosystem (Three-Repo Architecture)
+
+| Repo | Role | GitHub |
+|------|------|--------|
+| **codeindex** | AST parsing, code structure extraction | https://github.com/dreamlx/codeindex |
+| **LoomGraph** | Orchestration, data mapping, CLI/MCP entry point | https://github.com/dreamlx/LoomGraph |
+| **LightRAG** | Storage, retrieval, knowledge graph management | https://github.com/dreamlx/LightRAG |
+
+Data flow: `codeindex scan` → ParseResult → `LoomGraph embed/inject` → LightRAG API → PostgreSQL (pgvector + AGE)
+
+Architecture details: [LoomGraph SYSTEM_DESIGN.md](https://github.com/dreamlx/LoomGraph/blob/main/docs/architecture/SYSTEM_DESIGN.md)
+
+### Production Deployment
+
+- Storage backend: PostgreSQL 16 (pgvector + Apache AGE) per customer (ADR-004)
+- Deployment details: `docs/deployment/OPERATIONS_MANUAL.md`
+- Migration roadmap: `docs/roadmap/EPIC-002-POSTGRESQL-MIGRATION.md`
+
 ## Core Architecture
 
 ### Key Components
@@ -160,19 +180,15 @@ async def custom_embed(texts: list[str]) -> np.ndarray:
 
 ### Storage Configuration
 
-Configure via environment variables or constructor params:
+Configure via environment variables (recommended) or constructor params. See `env.example` for full list.
 
 ```python
-# Environment-based (recommended for production)
-# See env.example for full list
-
-# Constructor-based
 rag = LightRAG(
     working_dir="./storage",
     workspace="project_name",  # For data isolation
     kv_storage="PGKVStorage",
     vector_storage="PGVectorStorage",
-    graph_storage="Neo4JStorage",
+    graph_storage="PGGraphStorage",        # Requires Apache AGE extension
     doc_status_storage="PGDocStatusStorage",
     vector_db_storage_cls_kwargs={
         "cosine_better_than_threshold": 0.2
@@ -180,44 +196,43 @@ rag = LightRAG(
 )
 ```
 
-### Document Insertion
-
-```python
-# Single document
-await rag.ainsert("Text content")
-
-# Batch insertion
-await rag.ainsert(["Text 1", "Text 2", ...])
-
-# With custom IDs
-await rag.ainsert("Text", ids=["doc-123"])
-
-# With file paths (for citation)
-await rag.ainsert(["Text 1", "Text 2"], file_paths=["doc1.pdf", "doc2.pdf"])
-
-# Configure batch size
-rag = LightRAG(..., max_parallel_insert=4)  # Default: 2, max recommended: 10
+Environment variable equivalents (used in production `.env` files):
+```bash
+LIGHTRAG_KV_STORAGE=PGKVStorage
+LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-### Query Configuration
+### Document Insertion & Query
 
+Standard usage — see upstream README for full examples:
 ```python
-from lightrag import QueryParam
+await rag.ainsert("Text content")                           # Single doc
+await rag.ainsert(["Text 1", "Text 2"], ids=["id1", "id2"]) # Batch with IDs
+result = await rag.aquery("question", param=QueryParam(mode="hybrid"))
+```
 
-result = await rag.aquery(
-    "Your question",
-    param=QueryParam(
-        mode="mix",                    # Recommended with reranker
-        top_k=60,                      # KG entities/relations to retrieve
-        chunk_top_k=20,                # Text chunks to retrieve
-        max_entity_tokens=6000,
-        max_relation_tokens=8000,
-        max_total_tokens=30000,
-        enable_rerank=True,
-        user_prompt="Additional instructions for LLM",
-        stream=False
-    )
-)
+### Custom API Endpoints (Fork-Specific)
+
+These endpoints are added in our fork for LoomGraph integration:
+
+| Endpoint | Method | Purpose | Router |
+|----------|--------|---------|--------|
+| `/insert_custom_kg` | POST | Inject pre-built KG (skip LLM extraction) | document_routes |
+| `/api/workspaces` | GET | List available workspaces | lightrag_server |
+| `/graph/entities/all` | GET | Export all entities | graph_routes |
+| `/graph/relations/all` | GET | Export all relations | graph_routes |
+| `/graph/entity/create` | POST | Create single entity | graph_routes |
+| `/graph/relation/create` | POST | Create single relation | graph_routes |
+| `/graph/entities/merge` | POST | Merge duplicate entities | graph_routes |
+| `/documents/delete_entity` | DELETE | Delete entity and its relations | document_routes |
+
+Key endpoint for LoomGraph integration:
+```bash
+# insert_custom_kg — bypasses LLM, directly injects entities/relations/chunks
+curl -X POST /insert_custom_kg -H "Content-Type: application/json" \
+  -d '{"custom_kg": {"entities": [...], "relationships": [...], "chunks": [...]}}'
 ```
 
 ## WebUI Development
@@ -261,17 +276,10 @@ Cannot wrap already-decorated embedding functions. Use `.func` to access underly
 ```
 
 ### 4. Context Length for Ollama
-Ollama models default to 8k context; LightRAG requires 32k+. Configure via:
-```python
-llm_model_kwargs={"options": {"num_ctx": 32768}}
-```
+Ollama models default to 8k context; LightRAG requires 32k+. Set `llm_model_kwargs={"options": {"num_ctx": 32768}}`.
 
-### 5. Embedding Format Compatibility
-Custom OpenAI-compatible endpoints may return embeddings as raw arrays instead of base64 strings. Handle both formats:
-```python
-np.array(dp.embedding, dtype=np.float32) if isinstance(dp.embedding, list)
-else np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
-```
+### 5. PGGraphStorage Requires Apache AGE
+`PGGraphStorage` depends on the Apache AGE extension. Use a Docker image that includes it (e.g., `marcosbolanos/pgvector-age`). Plain `pgvector/pgvector` will fail with `function create_graph(unknown) does not exist`.
 
 ### 6. Async Generator Lock Management
 Never hold locks across async generator yields - create snapshots instead to prevent deadlocks:
@@ -360,8 +368,9 @@ Each LightRAG instance can use a `workspace` parameter for data isolation. Imple
 
 ### Embedding Models
 - Must be consistent across indexing and querying
-- Recommended: `BAAI/bge-m3`, `text-embedding-3-large`
-- Changing models requires clearing vector storage and recreating with new dimensions
+- Production (code analysis): `jinaai/jina-embeddings-v2-base-code` (768d, 8K context) via TEI
+- General purpose: `BAAI/bge-m3`, `text-embedding-3-large`
+- Changing models requires clearing vector storage and Cold Rebuild with new dimensions
 
 ### Reranker Configuration
 - Significantly improves retrieval quality

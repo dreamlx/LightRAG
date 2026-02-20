@@ -2,6 +2,22 @@
 
 本文档记录 LightRAG 多租户部署的运维操作指南。
 
+## 生态系统
+
+三仓库分层架构：
+
+| 仓库 | 职责 | GitHub |
+|------|------|--------|
+| **codeindex** | AST 解析，提取代码结构 (Symbol/Call/Inheritance/Import) | https://github.com/dreamlx/codeindex |
+| **LoomGraph** | 协调调度，数据映射，CLI/MCP 入口 | https://github.com/dreamlx/LoomGraph |
+| **LightRAG** | 存储检索，知识图谱管理 (PG + pgvector + AGE) | https://github.com/dreamlx/LightRAG (fork of HKUDS/LightRAG) |
+
+```
+codeindex scan → ParseResult JSON → LoomGraph embed/inject → LightRAG API → PostgreSQL
+```
+
+架构详情: [LoomGraph SYSTEM_DESIGN.md](https://github.com/dreamlx/LoomGraph/blob/main/docs/architecture/SYSTEM_DESIGN.md)
+
 ## 架构概览
 
 ```
@@ -42,6 +58,10 @@
 │   :9610 LightRAG      :9620 LightRAG                           │
 │   (pinpianyi)         (zhicaiyunlian)                          │
 │          │                   │                                  │
+│          ▼                   ▼                                  │
+│   :5432 PostgreSQL     :5433 PostgreSQL                         │
+│   (pgvector+AGE)       (pgvector+AGE)                          │
+│          │                   │                                  │
 │          └─────────┬─────────┘                                 │
 │                    ▼                                            │
 │          :9624 TEI (GPU 4)                                      │
@@ -69,8 +89,10 @@
 | pinpianyi_default | 9610 | 拼便宜 LightRAG |
 | zhicaiyunlian_default | 9620 | 智采云链 LightRAG |
 | TEI | 9624 | Jina Code V2 Embedding |
-| PostgreSQL | 5432 | 数据库 (预留) |
-| Redis | 6379 | 缓存 (预留) |
+| pg-pinpianyi | 5432 | 拼便宜 PostgreSQL (pgvector + AGE) |
+| pg-zhicaiyunlian | 5433 | 智采云链 PostgreSQL (pgvector + AGE) |
+| postgres (new-api) | - | New API 内部数据库 (Docker 网络) |
+| Redis | 6379 | 缓存 (New API 内部) |
 
 ### 端口规划
 
@@ -82,6 +104,9 @@
 3020-3029  : 智采云链 项目组
 3030-3039  : 预留 (新客户)
 3040-3049  : 预留
+5432       : 拼便宜 PostgreSQL
+5433       : 智采云链 PostgreSQL
+5434+      : 预留 (新客户 PostgreSQL)
 ...
 ```
 
@@ -91,6 +116,11 @@
 ~/lightrag/                    # LightRAG 代码库
 ├── .venv/                     # Python 虚拟环境
 └── lightrag/                  # 源码
+
+/root/pg-data/                 # PostgreSQL 数据 & 配置
+├── docker-compose.yml         # PG 容器编排
+├── pinpianyi/                 # 拼便宜 PG 数据
+└── zhicaiyunlian/             # 智采云链 PG 数据
 
 ~/lightrag-projects/           # 项目数据目录
 ├── pinpianyi_default/
@@ -166,6 +196,12 @@ scp -P 2213 lightrag/api/routers/document_routes.py \
 # 重启 TEI
 docker restart tei-jina
 
+# PostgreSQL 管理 (docker-compose)
+cd /root/pg-data
+docker compose ps          # 查看状态
+docker compose restart     # 重启全部 PG
+docker compose logs -f     # 查看日志
+
 # 重载 Nginx
 systemctl reload nginx
 ```
@@ -225,10 +261,53 @@ ENABLE_LLM_CACHE=true
 ENABLE_LLM_CACHE_FOR_EXTRACT=true
 MAX_ASYNC=4
 MAX_PARALLEL_INSERT=2
+
+# PostgreSQL Storage Backend
+LIGHTRAG_KV_STORAGE=PGKVStorage
+LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
+
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5434  # 选择未使用的 PG 端口
+POSTGRES_USER=lightrag
+POSTGRES_PASSWORD=lightrag_${COMPANY}_2026
+POSTGRES_DATABASE=lightrag
+POSTGRES_MAX_CONNECTIONS=20
+POSTGRES_ENABLE_VECTOR=true
 EOF
 ```
 
-### 3. 添加 Nginx 配置
+### 3. 添加 PG 容器
+
+编辑 `/root/pg-data/docker-compose.yml`，添加新服务:
+
+```yaml
+  pg-newclient:
+    image: marcosbolanos/pgvector-age:latest
+    container_name: pg-newclient
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD: lightrag_newclient_2026
+      POSTGRES_DB: lightrag
+    ports:
+      - '5434:5432'
+    volumes:
+      - /root/pg-data/newclient:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lightrag']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+```
+
+```bash
+mkdir -p /root/pg-data/newclient
+cd /root/pg-data && docker compose up -d
+```
+
+### 4. 添加 Nginx 配置
 
 编辑 `/etc/nginx/sites-available/lightrag`，添加：
 
@@ -486,6 +565,41 @@ PORT=9620 \
 python -m lightrag.api.lightrag_server
 ```
 
+### PostgreSQL 连接失败
+
+```bash
+# 检查 PG 容器状态
+cd /root/pg-data && docker compose ps
+
+# 检查 PG 日志
+docker compose logs pg-pinpianyi --tail 50
+
+# 手动连接测试
+docker exec pg-pinpianyi psql -U lightrag -c "SELECT 1"
+
+# 检查扩展
+docker exec pg-pinpianyi psql -U lightrag -c "SELECT extname, extversion FROM pg_extension;"
+
+# AGE 扩展缺失 (create_graph 报错)
+docker exec pg-pinpianyi psql -U lightrag -c "CREATE EXTENSION IF NOT EXISTS age CASCADE;"
+
+# 重启 PG
+docker compose restart pg-pinpianyi
+```
+
+### Docker 无法启动新容器 (cgroup timeout)
+
+```bash
+# 症状: "Failed to activate service 'org.freedesktop.systemd1': timed out"
+# 原因: systemd D-Bus 通信卡住
+# 解决: 重启 Docker daemon (已有容器有 restart policy)
+kill $(cat /var/run/docker.pid)
+sleep 5
+nohup dockerd --exec-opt native.cgroupdriver=cgroupfs &>/tmp/dockerd.log &
+sleep 15
+docker ps  # 验证容器恢复
+```
+
 ### TEI 服务异常
 
 ```bash
@@ -525,14 +639,97 @@ curl http://localhost:9624/health
 # LLM_TIMEOUT=300
 ```
 
+## PostgreSQL 管理
+
+### 架构决策
+
+- **ADR-004**: 每客户独立 PG 容器 (物理隔离)
+- **ADR-003**: Cold Rebuild (不迁移旧 NetworkX 数据)
+- **镜像**: `marcosbolanos/pgvector-age:latest` (PG16 + pgvector 0.8.0 + AGE 1.5.0)
+- **编排**: `/root/pg-data/docker-compose.yml`
+
+### 密码规则
+
+格式: `lightrag_{customer_shortname}_{year}`
+
+| 客户 | 用户名 | 密码 | 端口 |
+|------|--------|------|------|
+| 拼便宜 | lightrag | lightrag_pinpianyi_2026 | 5432 |
+| 智采云链 | lightrag | lightrag_zcyl_2026 | 5433 |
+
+### 常用操作
+
+```bash
+# 查看 PG 容器状态
+cd /root/pg-data && docker compose ps
+
+# 重启 PG
+docker compose restart
+
+# 查看 PG 日志
+docker compose logs -f pg-pinpianyi
+
+# 连接到 PG (拼便宜)
+docker exec -it pg-pinpianyi psql -U lightrag
+
+# 查看表
+docker exec pg-pinpianyi psql -U lightrag -c '\dt'
+
+# 查看扩展
+docker exec pg-pinpianyi psql -U lightrag -c "SELECT extname, extversion FROM pg_extension;"
+
+# 查看数据量
+docker exec pg-pinpianyi psql -U lightrag -c "SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC;"
+```
+
+### 存储配置 (.env)
+
+每个客户 .env 文件需要以下 PG 配置:
+
+```bash
+# Storage Backend
+LIGHTRAG_KV_STORAGE=PGKVStorage
+LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
+
+# PostgreSQL Connection
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432           # 每客户不同
+POSTGRES_USER=lightrag
+POSTGRES_PASSWORD=lightrag_xxx_2026
+POSTGRES_DATABASE=lightrag
+POSTGRES_MAX_CONNECTIONS=20
+POSTGRES_ENABLE_VECTOR=true
+```
+
+### 回滚到 NetworkX
+
+如果需要回退到文件存储:
+
+```bash
+# 1. 注释掉 .env 中的 LIGHTRAG_*_STORAGE 和 POSTGRES_* 行
+# 2. 重启实例 (自动回退到 JsonKV + NanoVectorDB + NetworkX)
+# 3. rag_storage/ 目录的文件数据仍在
+```
+
+### 新增客户 PG 容器
+
+1. 编辑 `/root/pg-data/docker-compose.yml`，添加新服务
+2. 选择下一个可用端口 (5434+)
+3. `cd /root/pg-data && docker compose up -d`
+
 ## 备份与恢复
 
 ### 备份数据
 
 ```bash
-# 备份单个项目
+# 备份单个项目 (配置 + 文件数据)
 tar -czf backup_pinpianyi_$(date +%Y%m%d).tar.gz \
   -C ~/lightrag-projects pinpianyi_default/
+
+# 备份 PG 数据库
+docker exec pg-pinpianyi pg_dump -U lightrag lightrag > backup_pg_pinpianyi_$(date +%Y%m%d).sql
 
 # 备份所有项目
 tar -czf backup_all_$(date +%Y%m%d).tar.gz \
@@ -592,3 +789,6 @@ done
 | 2026-02-08 | 添加端口 3001 向后兼容 (指向拼便宜) | - |
 | 2026-02-10 | 添加 LoomGraph Warm/Cold 更新策略文档 | - |
 | 2026-02-10 | 部署 POST /insert_custom_kg 批量注入端点 | - |
+| 2026-02-20 | PostgreSQL 迁移: 部署 pgvector+AGE 容器 (EPIC-002) | - |
+| 2026-02-20 | 存储后端切换: NetworkX → PGGraphStorage, NanoVectorDB → PGVectorStorage | - |
+| 2026-02-20 | Docker daemon 修复: systemd cgroup timeout, 临时切换到 cgroupfs driver | - |
