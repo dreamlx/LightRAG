@@ -457,6 +457,49 @@ def create_app(args):
         ],  # Expose token renewal header for cross-origin requests
     )
 
+    # Active request counter for runtime metrics (/health endpoint).
+    # Registered after CORS — FastAPI middleware order is LIFO, so this
+    # runs as the outermost layer and counts every inbound request.
+    _active_requests = 0
+
+    @app.middleware("http")
+    async def track_active_requests(request: Request, call_next):
+        nonlocal _active_requests
+        _active_requests += 1
+        try:
+            return await call_next(request)
+        finally:
+            _active_requests -= 1
+
+    def _collect_runtime_metrics(rag_instance) -> dict:
+        """Collect runtime bottleneck metrics for the /health endpoint."""
+        metrics: dict = {"active_requests": _active_requests}
+
+        # PG connection pool stats (graceful if not PG backend)
+        try:
+            db = getattr(rag_instance.entities_vdb, "db", None)
+            if db and hasattr(db, "get_pool_stats"):
+                metrics["pg_pool"] = db.get_pool_stats()
+        except Exception:
+            pass
+
+        # Embedding queue stats
+        try:
+            embed_func = getattr(rag_instance.embedding_func, "func", None)
+            if embed_func and hasattr(embed_func, "get_queue_stats"):
+                metrics["embedding_queue"] = embed_func.get_queue_stats()
+        except Exception:
+            pass
+
+        # LLM queue stats
+        try:
+            if hasattr(rag_instance.llm_model_func, "get_queue_stats"):
+                metrics["llm_queue"] = rag_instance.llm_model_func.get_queue_stats()
+        except Exception:
+            pass
+
+        return metrics
+
     # Create combined auth dependency for all endpoints
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -1138,7 +1181,11 @@ def create_app(args):
             workspace_manager=workspace_manager,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    app.include_router(
+        create_query_routes(
+            rag, api_key, args.top_k, workspace_manager=workspace_manager
+        )
+    )
     app.include_router(
         create_graph_routes(rag, api_key, workspace_manager=workspace_manager)
     )
@@ -1345,6 +1392,7 @@ def create_app(args):
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
                 "keyed_locks": keyed_lock_info,
+                "runtime_metrics": _collect_runtime_metrics(rag),
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_title": webui_title,
